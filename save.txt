@@ -1,0 +1,99 @@
+(base) PS E:\求职用\UI设计\matrix> npx tsc --noEmit
+src/App.tsx:3:10 - error TS2305: Module '"./mocks/mockDataGenerator"' has no exported member 'generateMockGalaxyData'.
+
+3 import { generateMockGalaxyData } from './mocks/mockDataGenerator';
+           ~~~~~~~~~~~~~~~~~~~~~~
+
+src/App.tsx:29:13 - error TS7006: Parameter 'prev' implicitly has an 'any' type.
+
+29     setData(prev => {
+               ~~~~
+
+src/App.tsx:43:14 - error TS18046: 'n' is of type 'unknown'.
+
+43         n => n.id !== nodeId && n.status === 'IDLE'
+                ~
+
+src/App.tsx:43:33 - error TS18046: 'n' is of type 'unknown'.
+
+43         n => n.id !== nodeId && n.status === 'IDLE'
+                                   ~
+
+src/App.tsx:48:33 - error TS18046: 'a' is of type 'unknown'.
+
+48           const da = Math.hypot(a.coords.x - target.x, a.coords.y - target.y);
+                                   ~
+
+src/App.tsx:48:56 - error TS18046: 'a' is of type 'unknown'.
+
+48           const da = Math.hypot(a.coords.x - target.x, a.coords.y - target.y);
+                                                          ~
+
+src/App.tsx:49:33 - error TS18046: 'b' is of type 'unknown'.
+
+49           const db = Math.hypot(b.coords.x - target.x, b.coords.y - target.y);
+                                   ~
+
+src/App.tsx:49:56 - error TS18046: 'b' is of type 'unknown'.
+
+49           const db = Math.hypot(b.coords.x - target.x, b.coords.y - target.y);
+                                                          ~
+
+src/App.tsx:59:31 - error TS2339: Property 'id' does not exist on type '{}'.
+
+59         nextNodes[replacement.id] = { ...replacement, status: 'ACTIVE' as const };
+                                 ~~
+
+src/App.tsx:59:55 - error TS2322: Type '"ACTIVE"' is not assignable to type 'NodeStatus'.
+
+59         nextNodes[replacement.id] = { ...replacement, status: 'ACTIVE' as const };
+                                                         ~~~~~~
+
+  src/types/domain.ts:32:3
+    32   status: NodeStatus;
+         ~~~~~~
+    The expected type comes from property 'status' which is declared here on type 'RelayNode'
+
+src/App.tsx:73:62 - error TS18046: 'n' is of type 'unknown'.
+
+73     const candidates = Object.values(data.nodes).filter(n => n.status === 'ACTIVE');
+                                                                ~
+
+src/App.tsx:78:33 - error TS18046: 'a' is of type 'unknown'.
+
+78           const da = Math.hypot(a.coords.x - anchor.coords.x, a.coords.y - anchor.coords.y);
+                                   ~
+
+src/App.tsx:78:63 - error TS18046: 'a' is of type 'unknown'.
+
+78           const da = Math.hypot(a.coords.x - anchor.coords.x, a.coords.y - anchor.coords.y);
+                                                                 ~
+
+src/App.tsx:79:33 - error TS18046: 'b' is of type 'unknown'.
+
+79           const db = Math.hypot(b.coords.x - anchor.coords.x, b.coords.y - anchor.coords.y);
+                                   ~
+
+src/App.tsx:79:63 - error TS18046: 'b' is of type 'unknown'.
+
+79           const db = Math.hypot(b.coords.x - anchor.coords.x, b.coords.y - anchor.coords.y);
+                                                                 ~
+
+src/App.tsx:83:9 - error TS18046: 'nearest' is of type 'unknown'.
+
+83     if (nearest.id !== state.selectedNodeId) {
+           ~~~~~~~
+
+src/App.tsx:84:26 - error TS18046: 'nearest' is of type 'unknown'.
+
+84       actions.selectNode(nearest.id);
+                            ~~~~~~~
+
+src/App.tsx:127:13 - error TS2322: Type '{ nodes: any; edges: any; selectedNodeId: string; phase: FSMPhase; targetCoords: SpatialCoords | null; onSelectNode: (nodeId: string) => void; onStartSimulation: (nodeId: string, coords: { ...; }) => void; onUpdateCoords: (coords: { ...; }) => void; onEnterDecisionStage: () => void; onTriggerAbort: () => void; onCom...' is not assignable to type 'IntrinsicAttributes & TopologyCanvasProps'.
+  Property 'targetCoords' does not exist on type 'IntrinsicAttributes & TopologyCanvasProps'.
+
+127             targetCoords={state.targetCoords}
+                ~~~~~~~~~~~~
+
+
+Found 18 errors in the same file, starting at: src/App.tsx:3

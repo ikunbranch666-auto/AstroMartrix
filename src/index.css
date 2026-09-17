@@ -1,0 +1,211 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ============================================================
+ * AstroMatrix · Design Tokens (设计令牌)
+ * 全部 Token 以 CSS 变量形式暴露，供 tailwind.config.js 的
+ * colors 映射 (void / surface-* / accent-* / tactical-* / content-*) 引用。
+ * ============================================================ */
+:root {
+  /* 底色层级 */
+  --bg-void: #06080b;
+  --surface-base: #0d1117;
+  --surface-raised: #161b22;
+  --surface-overlay: #1c2128;
+
+  /* 主数据色 / 警示色 / 紧急色 */
+  --accent-cyan: #00f0ff;
+  --accent-amber: #f59e0b;
+  --accent-magenta: #ff0055;
+  --accent-yellow: #facc15;
+  --accent-green: #3fb950;
+
+  /* 战术线条与网格 */
+  --line-dim: #21262d;
+  --line-glow: rgba(0, 240, 255, 0.35);
+  --grid-hairline: rgba(139, 148, 158, 0.07);
+
+  /* 文本层级 */
+  --text-primary: #f0f6fc;
+  --text-secondary: #8b949e;
+  --text-muted: #6e7681;
+
+  /* 面板内阴影 / 发光 */
+  --panel-inset: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  --glow-cyan: 0 0 12px rgba(0, 240, 255, 0.28);
+  --glow-amber: 0 0 12px rgba(245, 158, 11, 0.3);
+  --glow-magenta: 0 0 12px rgba(255, 0, 85, 0.3);
+}
+
+/* ===== 全局重置与稳健系统字体栈 ===== */
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background-color: var(--bg-void);
+  color: var(--text-primary);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  overflow: hidden;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.font-data {
+  font-family: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Consolas, "Noto Sans Mono CJK SC", monospace;
+  font-variant-numeric: tabular-nums slashed-zero;
+}
+
+/* 滚动条战术化 (深色细条，杜绝系统默认亮条) */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: var(--bg-void);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--line-dim);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 240, 255, 0.35);
+}
+
+/* ===== 单层 45° 多面体切角核心类 ===== */
+.chamfer-sm {
+  clip-path: polygon(
+    6px 0,
+    calc(100% - 6px) 0,
+    100% 6px,
+    100% calc(100% - 6px),
+    calc(100% - 6px) 100%,
+    6px 100%,
+    0 calc(100% - 6px),
+    0 6px
+  );
+}
+
+.chamfer-md {
+  clip-path: polygon(
+    12px 0,
+    calc(100% - 12px) 0,
+    100% 12px,
+    100% calc(100% - 12px),
+    calc(100% - 12px) 100%,
+    12px 100%,
+    0 calc(100% - 12px),
+    0 12px
+  );
+}
+
+.chamfer-lg {
+  clip-path: polygon(
+    20px 0,
+    calc(100% - 20px) 0,
+    100% 20px,
+    100% calc(100% - 20px),
+    calc(100% - 20px) 100%,
+    20px 100%,
+    0 calc(100% - 20px),
+    0 20px
+  );
+}
+
+/* ===== 真实 1px 45° 倒角边框方案 (Dual-Layer 复合切角) =====
+ * 原理：外层切角容器背景为边框发光色，内层切角内容向内 inset 1px 并填充面板底色。
+ * 用法：<div class="chamfer-frame-md"><div class="chamfer-inner">...</div></div>
+ */
+.chamfer-frame-sm {
+  clip-path: polygon(6px 0, calc(100% - 6px) 0, 100% 6px, 100% calc(100% - 6px), calc(100% - 6px) 100%, 6px 100%, 0 calc(100% - 6px), 0 6px);
+  background: var(--line-dim);
+  padding: 1px;
+}
+.chamfer-frame-sm > .chamfer-inner {
+  clip-path: polygon(5px 0, calc(100% - 5px) 0, 100% 5px, 100% calc(100% - 5px), calc(100% - 5px) 100%, 5px 100%, 0 calc(100% - 5px), 0 5px);
+  background: var(--surface-base);
+  height: 100%;
+  width: 100%;
+}
+
+.chamfer-frame-md {
+  clip-path: polygon(12px 0, calc(100% - 12px) 0, 100% 12px, 100% calc(100% - 12px), calc(100% - 12px) 100%, 12px 100%, 0 calc(100% - 12px), 0 12px);
+  background: var(--line-dim);
+  padding: 1px;
+}
+.chamfer-frame-md > .chamfer-inner {
+  clip-path: polygon(11px 0, calc(100% - 11px) 0, 100% 11px, 100% calc(100% - 11px), calc(100% - 11px) 100%, 11px 100%, 0 calc(100% - 11px), 0 11px);
+  background: var(--surface-base);
+  height: 100%;
+  width: 100%;
+}
+
+.chamfer-frame-lg {
+  clip-path: polygon(20px 0, calc(100% - 20px) 0, 100% 20px, 100% calc(100% - 20px), calc(100% - 20px) 100%, 20px 100%, 0 calc(100% - 20px), 0 20px);
+  background: var(--line-dim);
+  padding: 1px;
+}
+.chamfer-frame-lg > .chamfer-inner {
+  clip-path: polygon(19px 0, calc(100% - 19px) 0, 100% 19px, 100% calc(100% - 19px), calc(100% - 19px) 100%, 19px 100%, 0 calc(100% - 19px), 0 19px);
+  background: var(--surface-base);
+  height: 100%;
+  width: 100%;
+}
+
+/* ===== 面包屑 45° 咬合切角与防溢出保护 ===== */
+.crumb-lead {
+  clip-path: polygon(0 0, 100% 0, calc(100% - 14px) 100%, 0 100%);
+  min-width: 100px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.crumb-tooth {
+  clip-path: polygon(14px 0, 100% 0, calc(100% - 14px) 100%, 0 100%);
+  min-width: 120px;
+  flex-shrink: 0;
+  margin-left: -14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ===== 机械装饰 ===== */
+.rivet {
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background: radial-gradient(circle at 35% 30%, #7a848e, #262c34 72%);
+  box-shadow: inset 0 -1px 1px rgba(0, 0, 0, 0.65);
+}
+
+.hazard-stripe {
+  background: repeating-linear-gradient(
+    45deg,
+    rgba(245, 158, 11, 0.55) 0 6px,
+    rgba(9, 12, 16, 0.92) 6px 12px
+  );
+}
+
+/* 决断窗口期告警闪烁 (由组件按 phase 挂载/卸载) */
+@keyframes tactical-alert {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.alert-flash {
+  animation: tactical-alert 0.9s steps(2, end) infinite;
+}
