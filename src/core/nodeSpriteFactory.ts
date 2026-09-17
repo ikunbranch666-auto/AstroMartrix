@@ -188,6 +188,51 @@ function rgba(hex: string, alpha: number): string {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
+/**
+ * 两色线性混合（t=0 取 a，t=1 取 b）
+ * 用于把 lightFactor 的明暗系数落到实际色值上，而不是靠额外叠层
+ */
+function mixHex(a: string, b: string, t: number): string {
+  const k = Math.max(0, Math.min(1, t));
+  const pa = a.replace('#', '');
+  const pb = b.replace('#', '');
+  const ch = (i: number): number => {
+    const va = parseInt(pa.slice(i, i + 2), 16);
+    const vb = parseInt(pb.slice(i, i + 2), 16);
+    return Math.round(va + (vb - va) * k);
+  };
+  const h = (n: number): string => n.toString(16).padStart(2, '0');
+  return `#${h(ch(0))}${h(ch(2))}${h(ch(4))}`;
+}
+
+/**
+ * 层间投影（§5.5 REQ-V4）：在该层贴片自身坐标系内，沿 +X/+Y 偏移画一圈压暗椭圆
+ * 由于各层贴片都在 drawNodeZOrder 的绘制序里依次覆盖，投影会自然落在"下方那层"之上，
+ * 从而形成 L6->L7 / L4->L6 / L2->L4 三级层间投影。
+ */
+function projectionShadow(
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  rX: number,
+  rY: number,
+  dx: number,
+  dy: number,
+  blur: number,
+  alpha: number
+): void {
+  ctx.save();
+  ctx.shadowColor = `rgba(0, 0, 0, ${alpha})`;
+  ctx.shadowBlur = blur;
+  ctx.shadowOffsetX = dx;
+  ctx.shadowOffsetY = dy;
+  ctx.beginPath();
+  ctx.ellipse(cx, cy, rX, rY, 0, 0, Math.PI * 2);
+  ctx.fillStyle = `rgba(0, 0, 0, ${alpha})`;
+  ctx.fill();
+  ctx.restore();
+}
+
 const DEG = Math.PI / 180;
 
 /** 离屏画布工厂：物理像素 = CSS 像素 × dpr，逻辑坐标恒以 CSS 像素为单位 */
@@ -366,17 +411,19 @@ function drawL3Truss(ctx: CanvasRenderingContext2D, cx: number, cy: number, g: N
   L3_BEAM_ANGLES.forEach((a) => {
     const [x1, y1] = ellipsePoint(cx, cy, hubR, hubR * K_Y, a);
     const [x2, y2] = ellipsePoint(cx, cy, rEnd, rEnd * K_Y, a);
+    // D5：按该桁架方位施加方向性光照（左上 135° 亮、右下 315° 暗）
+    const lf = lightFactor(a);
     ctx.beginPath();
     ctx.moveTo(x1, y1);
     ctx.lineTo(x2, y2);
-    ctx.strokeStyle = COLOR.trussDark;
+    ctx.strokeStyle = mixHex(COLOR.trussDark, '#000000', Math.max(0, 1 - lf));
     ctx.lineWidth = 0.8;
     ctx.stroke();
     // 高光棱线 0.5px
     ctx.beginPath();
     ctx.moveTo(x1, y1 - 0.25);
     ctx.lineTo(x2, y2 - 0.25);
-    ctx.strokeStyle = rgba(COLOR.trussHighlight, 0.9);
+    ctx.strokeStyle = rgba(COLOR.trussHighlight, Math.max(0.3, Math.min(1, 0.9 * lf)));
     ctx.lineWidth = 0.5;
     ctx.stroke();
     // LOCKED 嵌光 / ALERT 警示光
@@ -390,10 +437,11 @@ function drawL3Truss(ctx: CanvasRenderingContext2D, cx: number, cy: number, g: N
     }
   });
 
-  // 支撑方柱：0.8×0.8，顶面提亮
+  // 支撑方柱：0.8×0.8，顶面提亮（D5：柱顶亮度随其方位变化）
   L3_PILLAR_ANGLES.forEach((a) => {
     const [px, py] = ellipsePoint(cx, cy, rEnd * 0.82, rEnd * K_Y * 0.82, a);
-    ctx.fillStyle = COLOR.trussTop;
+    const lf = lightFactor(a);
+    ctx.fillStyle = mixHex(COLOR.trussTop, '#000000', Math.max(0, 1 - lf));
     ctx.fillRect(snap(px - 0.4), snap(py - 0.4), 0.8, 0.8);
     ctx.strokeStyle = COLOR.trussDark;
     ctx.lineWidth = 0.4;
@@ -427,8 +475,15 @@ const L4_STAGED_ORDER = [2, 1, 3, 0];
 const L4_STAGED_TIMING = { mainStart: 0, mainEnd: 350, mainAngle: 25, subStart: 120, subEnd: 500, subAngle: 15 };
 const L4_STAGED_TOTAL_MS = 500;
 
-const L4_SHELL_TOP = '#2D333B';
-const L4_SHELL_BOTTOM = '#1A1F26';
+/** L4 装甲顶面三段色阶（§3.2：迎光 #30363D -> 中间调 #21262D -> 背光 #161B22） */
+const L4_SHELL_TOP = '#30363D';
+const L4_SHELL_BOTTOM = '#161B22';
+/** 中间调：按段方位插值定位（D3） */
+const L4_SHELL_MID = '#21262D';
+/** L4 厚度侧面色（§3.2：纯色 #0D1117） */
+const L4_SIDE_COLOR = '#0D1117';
+/** L4 厚度侧面的 Y 轴偏移（§3.2：V_depth = (0, 1.43px)） */
+const L4_SIDE_DEPTH_Y = 1.43;
 
 /**
  * 单段装甲瓦绘制
@@ -461,21 +516,37 @@ function drawArmorSeg(
   const lift = flip * 0.06;
 
   ctx.save();
+
+  // ===== D1：厚度侧面 =====
+  // 以「顶面沿 Y 轴向下平移 V_depth_y」的环形填深色，形成真实厚度（仅露在顶面下缘，其余被顶面覆盖）
+  ellipseRingPath(ctx, cx, cy + L4_SIDE_DEPTH_Y, rOuter + lift * 2, rInner, a0, a1);
+  ctx.fillStyle = L4_SIDE_COLOR;
+  ctx.fill();
+
+  // ===== D2 + D3：顶面三段渐变，按该段方位定向（迎光段亮头，背光段暗尾） =====
+  const segLight = lightFactor(midA);
+  const dirUx = Math.cos(midA);
+  const dirUy = Math.sin(midA) * K_Y;
+  const reach = rOuter * 0.6;
   const grad = ctx.createLinearGradient(
-    cx - rOuter * 0.6,
-    cy - rOuter * K_Y * 0.6,
-    cx + rOuter * 0.6,
-    cy + rOuter * K_Y * 0.6
+    cx - dirUx * reach,
+    cy - dirUy * reach,
+    cx + dirUx * reach,
+    cy + dirUy * reach
   );
-  grad.addColorStop(0, L4_SHELL_TOP);
-  grad.addColorStop(1, L4_SHELL_BOTTOM);
+  // 以该段明暗系数在「最亮色 … 最暗色」之间选择两端色与中段色
+  const brightEnd = mixHex(L4_SHELL_MID, L4_SHELL_TOP, Math.max(0, segLight - 1) / 0.2);
+  const darkEnd = mixHex(L4_SHELL_MID, L4_SHELL_BOTTOM, Math.max(0, 1 - segLight) / 0.3);
+  grad.addColorStop(0, brightEnd);
+  grad.addColorStop(0.5, L4_SHELL_MID);
+  grad.addColorStop(1, darkEnd);
 
   ellipseRingPath(ctx, cx, cy, rOuter + lift * 2, rInner, a0, a1);
   ctx.fillStyle = grad;
   ctx.fill();
 
   // 外缘轮廓 + 左上光源明暗描边
-  ctx.strokeStyle = rgba('#6E7681', 0.85 * lightFactor((a0 + a1) / 2));
+  ctx.strokeStyle = rgba('#6E7681', 0.85 * segLight);
   ctx.lineWidth = lockedEdge ? 0.9 : 0.6;
   ellipseArcPath(ctx, cx, cy, rOuter + lift * 2, (rOuter + lift * 2) * K_Y, a0, a1);
   ctx.stroke();
@@ -595,11 +666,11 @@ function drawL5Quant(ctx: CanvasRenderingContext2D, cx: number, cy: number, rL5:
     ctx.strokeStyle = rgba(color, Math.max(0.25, 0.95 * lightFactor(midA)));
     ctx.lineWidth = 0.5;
     ctx.stroke();
-    // 短弧端点点阵（脉冲感）
+    // 短弧端点点阵（脉冲感）（D5：端点亮度跟随其方位）
     const [ex, ey] = ellipsePoint(cx, cy, rL5, rL5 * K_Y, a0);
     ctx.beginPath();
     ctx.arc(ex, ey, 0.4, 0, Math.PI * 2);
-    ctx.fillStyle = rgba(color, 0.95);
+    ctx.fillStyle = rgba(color, Math.max(0.25, Math.min(1, 0.95 * lightFactor(a0))));
     ctx.fill();
   }
   ctx.restore();
@@ -609,7 +680,8 @@ function drawL5Quant(ctx: CanvasRenderingContext2D, cx: number, cy: number, rL5:
 function drawL5Segment(ctx: CanvasRenderingContext2D, cx: number, cy: number, rL5: number, color: string): void {
   ctx.save();
   ellipseArcPath(ctx, cx, cy, rL5, rL5 * K_Y, -22.5 * DEG, 22.5 * DEG, 14);
-  ctx.strokeStyle = rgba(color, 0.95);
+  // D5：模板位于 0°，其迎光侧（负角一侧朝向 135°）更亮，故按其中心方位施加 lightFactor
+  ctx.strokeStyle = rgba(color, Math.max(0.25, Math.min(1, 0.95 * lightFactor(0))));
   ctx.lineWidth = 0.5;
   ctx.stroke();
   ctx.restore();
@@ -628,6 +700,10 @@ function drawL6Shell(ctx: CanvasRenderingContext2D, cx: number, cy: number, g: N
   const rL6 = g.rL6;
   const verts = 6; // 多面体壳：六边形底面
   ctx.save();
+
+  // ===== D4-a：L4 -> L6 层间投影（§5.5 REQ-V4：偏移 +1.2/+1.5px，模糊 2.5px，rgba(0,0,0,0.65)） =====
+  // 先于井口内阴影绘制，使投影落在 L7 之上、L6 之下，形成"装甲压在核心舱上"的层间感
+  projectionShadow(ctx, cx, cyShell, g.rL4Hole * 1.02, g.rL4Hole * 1.02 * K_Y, 1.2, 1.5, 2.5, 0.65);
 
   // 井口内壁 1.5px 渐变内阴影
   const wellGrad = ctx.createRadialGradient(cx, cyShell, rL6 * 0.2, cx, cyShell, g.rL4Hole * 1.05);
@@ -672,14 +748,18 @@ function drawL6Shell(ctx: CanvasRenderingContext2D, cx: number, cy: number, g: N
 
 /* ================================ L7 铭刻基底层（§3.2 L7） ================================ */
 /** 3×3 状态微缩点阵（HUB / RELAY） */
-function drawL7Matrix(ctx: CanvasRenderingContext2D, cx: number, cy: number, color: string): void {
+function drawL7Matrix(ctx: CanvasRenderingContext2D, cx: number, cy: number, color: string, rL4Hole: number): void {
   const pitch = 2.2;
   ctx.save();
+  // D4-b：L6 -> L7 层间投影（§5.5 REQ-V4：偏移 +0.5/+0.5px，模糊 1.0px，rgba(0,0,0,0.35)）
+  projectionShadow(ctx, cx, cy, rL4Hole * 0.72, rL4Hole * 0.72 * K_Y, 0.5, 0.5, 1.0, 0.35);
   for (let row = -1; row <= 1; row++) {
     for (let col = -1; col <= 1; col++) {
       ctx.beginPath();
       ctx.arc(cx + col * pitch, cy + row * pitch * K_Y, 0.5, 0, Math.PI * 2);
-      ctx.fillStyle = rgba(color, 0.9);
+      // D5：按点位相对光源的方位施加方向性光照（左上角点更亮）
+      const angle = Math.atan2(row * pitch * K_Y, col * pitch);
+      ctx.fillStyle = rgba(color, Math.max(0.35, Math.min(1, 0.7 * lightFactor(angle))));
       ctx.fill();
     }
   }
@@ -690,8 +770,10 @@ function drawL7Matrix(ctx: CanvasRenderingContext2D, cx: number, cy: number, col
 function drawL7Compass(ctx: CanvasRenderingContext2D, cx: number, cy: number, g: NodeGeom, color: string): void {
   const r = g.rL4Hole * 0.72;
   ctx.save();
-  // 椭圆罗盘环
-  ctx.strokeStyle = rgba(color, 0.75);
+  // D4-b：L6 -> L7 层间投影（§5.5 REQ-V4：偏移 +0.5/+0.5px，模糊 1.0px，rgba(0,0,0,0.35)）
+  projectionShadow(ctx, cx, cy, r, r * K_Y, 0.5, 0.5, 1.0, 0.35);
+  // 椭圆罗盘环（D5：按方位施加方向性光照，迎光的左上弧更亮）
+  ctx.strokeStyle = rgba(color, 0.75 * lightFactor(Math.PI * 1.25));
   ctx.lineWidth = 0.5;
   ellipseArcPath(ctx, cx, cy, r, r * K_Y, 0, Math.PI * 2, 48);
   ctx.stroke();
@@ -707,14 +789,15 @@ function drawL7Compass(ctx: CanvasRenderingContext2D, cx: number, cy: number, g:
   ctx.strokeStyle = rgba(color, 0.6);
   ctx.lineWidth = 0.5;
   ctx.stroke();
-  // 四向刻度
+  // 四向刻度（D5：逐向按 lightFactor 调整亮度，左上 135° 最亮、右下 315° 最暗）
   [0, 90, 180, 270].forEach((d) => {
-    const [x1, y1] = ellipsePoint(cx, cy, r * 0.86, r * K_Y * 0.86, d * DEG);
-    const [x2, y2] = ellipsePoint(cx, cy, r * 1.06, r * K_Y * 1.06, d * DEG);
+    const a = d * DEG;
+    const [x1, y1] = ellipsePoint(cx, cy, r * 0.86, r * K_Y * 0.86, a);
+    const [x2, y2] = ellipsePoint(cx, cy, r * 1.06, r * K_Y * 1.06, a);
     ctx.beginPath();
     ctx.moveTo(x1, y1);
     ctx.lineTo(x2, y2);
-    ctx.strokeStyle = rgba(color, 0.8);
+    ctx.strokeStyle = rgba(color, Math.max(0.25, Math.min(1, 0.8 * lightFactor(a + Math.PI))));
     ctx.lineWidth = 0.5;
     ctx.stroke();
   });
@@ -852,7 +935,7 @@ export function buildNodeSpriteSheet(dpr?: number): NodeSpriteSheet {
     ALL_STATES.forEach((state) => {
       register(`L7_${type}_${state}_base`, 2 * g.rOuter + 10, (ctx, cx, cy) => {
         const color = state === 'LOCKED' ? COLOR.insigniaLocked : COLOR.insignia;
-        if (type === 'HUB' || type === 'RELAY') drawL7Matrix(ctx, cx, cy, color);
+        if (type === 'HUB' || type === 'RELAY') drawL7Matrix(ctx, cx, cy, color, g.rL4Hole);
         else drawL7Compass(ctx, cx, cy, g, color);
       });
     });

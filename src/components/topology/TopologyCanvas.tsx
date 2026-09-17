@@ -611,6 +611,8 @@ function drawNodeZOrder(
   // Z-5：L4 装甲壳闭合态（STAGED 开壳由实时管线处理）
   if (node.status !== 'STAGED') {
     drawStaticSprite(ctx, spriteSheet.get(`L4_${node.type}_${node.status}_base`));
+    // D6-A：板缝量化（§7.6）—— 按 seamWidth / seamAlpha 动态叠加在装甲瓦之上
+    drawL4Seams(ctx, node, params, 0, 0);
   }
 
   // Z-6：L2 珠链（固定投影 + 导轨 + 12 颗位置点亮珠）
@@ -714,6 +716,41 @@ const ARMOR_DEPTH_ORDER: { angle: number; isMain: boolean }[] = [
   { angle: 225, isMain: false },
   { angle: 135, isMain: true },
 ];
+
+/**
+ * D6-A：L4 板缝量化动态绘制（v1.8 §7.6 板缝量化表）
+ *
+ * 装甲瓦本体由 sprite 静态烘焙（含 5° 微缝），但板缝的**宽度与呼吸亮度需按负载/信号异常分级**
+ * 逐帧变化（computeNodeVisualParams 的 seamWidth / seamAlpha），因此这一层放在渲染期叠加：
+ * 沿每段装甲中心角画一道 seamWidth 宽的深色弧线，透明度取 seamAlpha（随 4s 周期呼吸）。
+ */
+function drawL4Seams(
+  ctx: CanvasRenderingContext2D,
+  node: RelayNode,
+  params: NodeVisualParams,
+  offsetX: number,
+  offsetY: number
+): void {
+  const rOuter = getNodeRadius(node.type);
+  const rInner = rOuter * 0.55;
+  const halfGap = (5 * Math.PI) / 360; // 与 sprite 工厂一致的 5° 微缝半角
+  const rMid = (rOuter + rInner) / 2;
+  const rYMid = rMid * 0.82;
+
+  ctx.save();
+  ctx.translate(offsetX, offsetY);
+  ctx.strokeStyle = `rgba(255, 0, 85, ${Math.max(0, Math.min(1, params.seamAlpha))})`;
+  ctx.lineWidth = Math.max(0.4, params.seamWidth);
+  for (let i = 0; i < ARMOR_DEPTH_ORDER.length; i++) {
+    const midA = (ARMOR_DEPTH_ORDER[i].angle * Math.PI) / 180;
+    const a0 = midA - halfGap;
+    const a1 = midA + halfGap;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, rMid, rYMid, 0, a0, a1);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
 
 /**
  * L4 STAGED 四段装甲按 2.5D 深度重排序绘制（§6.2 drawStagedArmorSegments）
@@ -845,6 +882,8 @@ function drawActiveLayers(
     ctx.save();
     ctx.translate(parallaxState.pL4.x, parallaxState.pL4.y);
     drawStaticSprite(ctx, spriteSheet.get(`L4_${node.type}_${node.status}_base`));
+    // D6-A：板缝量化（§7.6）—— 与静态节点同源，保证活跃节点也有一致的板缝呼吸
+    drawL4Seams(ctx, node, params, 0, 0);
     ctx.restore();
   }
 
