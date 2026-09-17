@@ -4,6 +4,7 @@ import { FSMPhase } from '../../types/fsm';
 import { NodeSpriteSheet, SpriteEntry, buildNodeSpriteSheet } from '../../core/nodeSpriteFactory';
 import { createParticlePool, ParticlePool } from '../../core/particlePool';
 import { MatrixEngine } from '../../engine/MatrixEngine';
+import { computeSpringInterpolation } from '../../engine/springPhysics';
 import { useCanvasDPR } from '../../hooks/useCanvasDPR';
 
 /* ==========================================================================================
@@ -25,6 +26,11 @@ export interface TopologyCanvasProps {
   edges: TopologyEdge[];
   selectedNodeId: string | null;
   phase: FSMPhase;
+  /**
+   * FSM 的推演目标坐标（世界百分比）。锚点语义的唯一真值源：
+   * STAGE1/STAGE2 期间节点停在 targetCoords；COMMITTED 后 App 会把它写入 node.coords。
+   */
+  targetCoords: [number, number] | null;
   onSelectNode: (nodeId: string) => void;
   /** 拖拽上报：跨过 5px 阈值时首次调用，其后每次 pointerMove 都调用（坐标单位：世界百分比 0-100） */
   onDragNode: (nodeId: string, x: number, y: number) => void;
@@ -133,6 +139,51 @@ function screenToWorld(
   return { x: (bx / DESIGN_W) * 100, y: (by / DESIGN_H) * 100 };
 }
 
+/* ---------- 活跃节点锚点派生（节点本体与连线共用同一条真值链） ---------- */
+
+/**
+ * 派生「活跃节点」当前应处的世界百分比坐标。
+ *
+ * 这是节点绘制与连线端点唯一的共享真值来源，避免两处各自内联推导导致不一致
+ * （曾出现：节点停在落点、连线却连回原位的割裂）。
+ *
+ * 语义：
+ *   STABLE_IDLE / COMMITTED : node.coords（COMMITTED 时 App 已把 targetCoords 写入其中）
+ *   STAGE1 / STAGE2         : 拖拽中取指针世界坐标；松手后停在 targetCoords
+ *   AUTO_ABORT              : 由 targetCoords 以 1.2s 阻尼弹簧回弹到 node.coords（连线同步跟随）
+ */
+function deriveActiveAnchor(
+  node: RelayNode,
+  phase: FSMPhase,
+  dragWorld: { x: number; y: number } | null,
+  targetCoords: [number, number] | null,
+  reboundStart: { time: number; x: number; y: number } | null,
+  now: number
+): [number, number] {
+  const baseX = node.coords[0];
+  const baseY = node.coords[1];
+
+  if (phase === 'AUTO_ABORT') {
+    if (reboundStart) {
+      const elapsed = (now - reboundStart.time) / 1000;
+      const spring = computeSpringInterpolation(
+        { x: reboundStart.x, y: reboundStart.y },
+        { x: baseX, y: baseY },
+        elapsed
+      );
+      return [spring.x, spring.y];
+    }
+    return [baseX, baseY];
+  }
+
+  if (phase === 'STAGE1_SIMULATION' || phase === 'STAGE2_DECISION') {
+    if (dragWorld) return [dragWorld.x, dragWorld.y];
+    if (targetCoords) return targetCoords;
+  }
+
+  return [baseX, baseY];
+}
+
 /* ---------- 边绘制辅助（模块级预分配，零逐帧分配） ---------- */
 
 /** 空虚线模板：复位 setLineDash 用（预分配，避免每次传新数组） */
@@ -174,18 +225,26 @@ function drawTopologyEdges(
   edges: TopologyEdge[],
   nodes: Record<string, RelayNode>,
   viewScale: number,
-  draggedNodeId: string | null,
-  dragWorld: { x: number; y: number } | null
+  selectedNodeId: string | null,
+  phase: FSMPhase,
+  dragWorld: { x: number; y: number } | null,
+  targetCoords: [number, number] | null,
+  reboundStart: { time: number; x: number; y: number } | null,
+  now: number
 ): void {
   // 线宽屏幕自适应：世界线宽 × scale，放大后不压过节点细节（同时保证缩小时不至于细到消失）
   const lw = (base: number): number => Math.max(0.35, base / viewScale);
 
   /**
-   * 端点世界坐标：拖拽中的节点用指针世界坐标取代其 node.coords，
-   * 使连线实时跟随被拖拽节点（修复"连线不跟随"）
+   * 端点世界坐标。与 drawActiveNode 共用 deriveActiveAnchor，保证连线与节点永远同步：
+   *   - 仅「当前活跃节点」且 phase 非稳态/非固化时走派生锚点（含拖拽、决断停留、熔断回弹）
+   *   - 其余 59 个节点始终用自身 node.coords
    */
   const endpointOf = (node: RelayNode): { x: number; y: number } => {
-    if (dragWorld && node.id === draggedNodeId) return dragWorld;
+    if (node.id === selectedNodeId && phase !== 'STABLE_IDLE' && phase !== 'COMMITTED') {
+      const [ax, ay] = deriveActiveAnchor(node, phase, dragWorld, targetCoords, reboundStart, now);
+      return { x: ax, y: ay };
+    }
     return { x: node.coords[0], y: node.coords[1] };
   };
 
@@ -824,7 +883,10 @@ function drawActiveNode(
   heatLevel: number,
   spriteSheet: NodeSpriteSheet,
   armorOpenElapsedMs: number,
-  dragWorld: { x: number; y: number } | null
+  dragWorld: { x: number; y: number } | null,
+  targetCoords: [number, number] | null,
+  reboundStart: { time: number; x: number; y: number } | null,
+  now: number
 ): void {
   const time = performance.now() / 1000;
   const isSimulating = phase === 'STAGE1_SIMULATION' || phase === 'STAGE2_DECISION';
@@ -838,9 +900,9 @@ function drawActiveNode(
   // 以 pL7 的浮起量为目标点，驱动 pL6 / pL4 / pL1 的差速跟随
   updateDragParallax(p7.x, p7.y);
 
-  // 拖拽位置回流：拖拽中优先用指针世界坐标，松手后 dragWorld 为 null 回落到 node.coords
-  const anchor = dragWorld ?? { x: node.coords[0], y: node.coords[1] };
-  const anchorPx = worldToPx(anchor.x, anchor.y);
+  // 2. 锚点派生：与连线端点共用 deriveActiveAnchor，避免两处逻辑分叉
+  const [anchorX, anchorY] = deriveActiveAnchor(node, phase, dragWorld, targetCoords, reboundStart, now);
+  const anchorPx = worldToPx(anchorX, anchorY);
 
   ctx.save();
   ctx.translate(anchorPx.x, anchorPx.y);
@@ -955,6 +1017,7 @@ export const TopologyCanvas: React.FC<TopologyCanvasProps> = ({
   edges,
   selectedNodeId,
   phase: _phase,
+  targetCoords,
   onSelectNode,
   onDragNode,
   onEnterDecisionStage,
@@ -972,6 +1035,8 @@ export const TopologyCanvas: React.FC<TopologyCanvasProps> = ({
   selectedNodeIdRef.current = selectedNodeId;
   const phaseRef = useRef(_phase);
   phaseRef.current = _phase;
+  const targetCoordsRef = useRef(targetCoords);
+  targetCoordsRef.current = targetCoords;
 
   /* ---------- 单例资源：首次挂载构建一次，卸载不销毁（复用） ---------- */
   const spriteSheetRef = useRef<NodeSpriteSheet | null>(null);
@@ -1010,19 +1075,26 @@ export const TopologyCanvas: React.FC<TopologyCanvasProps> = ({
 
   /* ---------- 帧时间：引擎回调不提供 dt，由上一帧时间戳自维护 ---------- */
   const lastFrameTimeRef = useRef(0);
-  const dtRef = useRef(0);
 
   /* ---------- L4 开壳计时：仅记录「首次进入推演态」的时刻，STAGE1->STAGE2 不重置 ---------- */
   const prevPhaseRef = useRef<FSMPhase>('STABLE_IDLE');
   const armorOpenStartRef = useRef<number | null>(null);
+  /**
+   * AUTO_ABORT 阻尼回弹起点（世界百分比）。
+   * 进入 AUTO_ABORT 时记录当帧锚点（= targetCoords），此后 1.2s 内以弹簧解析解回弹到 node.coords。
+   */
+  const reboundRef = useRef<{ time: number; x: number; y: number } | null>(null);
 
   /* ---------- 指针拖拽状态（全部走 ref，零 React setState） ---------- */
   const isPointerDownRef = useRef(false);
   const dragStartRef = useRef<{ x: number; y: number } | null>(null);
   const hasMovedPastThresholdRef = useRef(false);
   const draggedNodeIdRef = useRef<string | null>(null);
-  const currentDragPosRef = useRef<{ x: number; y: number } | null>(null);
-  /** 指针当前世界百分比坐标（拖拽回流到渲染的唯一真值源） */
+  /**
+   * 指针当前世界百分比坐标。
+   * 唯一用途：松手瞬间为 AUTO_ABORT 提供回弹起点 —— 此刻 FSM 的 targetCoords 可能尚未经 React
+   * 回灌到 Props，若直接从 targetCoords 取起点会产生一帧跳变。它不参与 STAGE1/STAGE2 的锚点派生。
+   */
   const pointerWorldRef = useRef<{ x: number; y: number } | null>(null);
 
   /* ---------- 视口：缩放 / 平移（全部走 ref，React 零重渲染） ---------- */
@@ -1084,6 +1156,7 @@ export const TopologyCanvas: React.FC<TopologyCanvasProps> = ({
       const currentEdges = edgesRef.current;
       const currentSelectedId = selectedNodeIdRef.current;
       const currentPhase = phaseRef.current;
+      const currentTarget = targetCoordsRef.current;
       // heatLevel 与 qosTier 一律取引擎高频回调值（画布不经 Props 接收，避免双真值源）
       const currentHeat = engineHeat;
       const currentTier = engineTierNum;
@@ -1091,15 +1164,60 @@ export const TopologyCanvas: React.FC<TopologyCanvasProps> = ({
       const isSimulating = currentPhase === 'STAGE1_SIMULATION' || currentPhase === 'STAGE2_DECISION';
       // 拖拽中的世界坐标：仅推演态生效，松手后回落 node.coords
       const dragWorld = isSimulating ? pointerWorldRef.current : null;
-      const draggedId = draggedNodeIdRef.current;
+
+      /**
+       * 相位变迁处理必须先于一切绘制：连线（step 1）与活跃节点（step 4）都要读回弹起点，
+       * 且两者必须读到同一帧的同一个值。
+       */
+      const activeNode = currentSelectedId ? currentNodes[currentSelectedId] : undefined;
+      if (activeNode) {
+        const prev = prevPhaseRef.current;
+        const prevSimulating = prev === 'STAGE1_SIMULATION' || prev === 'STAGE2_DECISION';
+        if (isSimulating && !prevSimulating) {
+          // L4 开壳计时：仅在「由非推演态首次进入 STAGE1」时记录起点，STAGE1->STAGE2 持续累加不重置
+          armorOpenStartRef.current = now;
+        } else if (!isSimulating) {
+          armorOpenStartRef.current = null;
+        }
+
+        if (currentPhase === 'AUTO_ABORT') {
+          if (!reboundRef.current) {
+            // 记录回弹起点：推演中为指针位置 / targetCoords，避免松手瞬间闪烁到原位
+            const from = pointerWorldRef.current
+              ?? (currentTarget ? { x: currentTarget[0], y: currentTarget[1] } : { x: activeNode.coords[0], y: activeNode.coords[1] });
+            reboundRef.current = { time: now, x: from.x, y: from.y };
+          }
+        } else if (reboundRef.current) {
+          // 离开 AUTO_ABORT（闭环回到 STABLE_IDLE 或用户重新开始推演）即清空回弹状态
+          reboundRef.current = null;
+        }
+        prevPhaseRef.current = currentPhase;
+      } else {
+        // 无活跃节点时复位开壳计时 / 回弹 / 相位记忆，避免下次拖拽复用陈旧进度
+        armorOpenStartRef.current = null;
+        reboundRef.current = null;
+        prevPhaseRef.current = currentPhase;
+      }
+      const reboundStart = reboundRef.current;
 
       ctx2.save();
       // 视口变换：世界（设计基准像素）-> 屏幕 CSS 像素，再叠加 DPR
       ctx2.setTransform(dpr * vp.scale, 0, 0, dpr * vp.scale, dpr * vp.offsetX, dpr * vp.offsetY);
       ctx2.clearRect(-4 * DESIGN_W, -4 * DESIGN_H, DESIGN_W * 10, DESIGN_H * 10);
 
-      // 1. 绘制拓扑连线（线宽按 viewScale 反比缩放；拖拽端点跟随指针）
-      drawTopologyEdges(ctx2, currentEdges, currentNodes, vp.scale, draggedId, dragWorld);
+      // 1. 绘制拓扑连线（线宽按 viewScale 反比缩放；活跃节点端点与节点本体共用派生锚点）
+      drawTopologyEdges(
+        ctx2,
+        currentEdges,
+        currentNodes,
+        vp.scale,
+        currentSelectedId,
+        currentPhase,
+        dragWorld,
+        currentTarget,
+        reboundStart,
+        now
+      );
 
       // 2. 绘制静态节点（Z-order Blit + L2 珠链公转 + L6 实时光斑）
       drawStaticNodes(ctx2, currentNodes, spriteSheet, currentSelectedId, timeSec);
@@ -1111,24 +1229,20 @@ export const TopologyCanvas: React.FC<TopologyCanvasProps> = ({
       }
 
       // 4. 绘制活跃节点（仅当存在有效选中节点）
-      const activeNode = currentSelectedId ? currentNodes[currentSelectedId] : undefined;
       if (activeNode) {
-        // L4 开壳计时：仅在「由非推演态首次进入 STAGE1」时记录起点，STAGE1->STAGE2 持续累加不重置
-        const prev = prevPhaseRef.current;
-        const prevSimulating = prev === 'STAGE1_SIMULATION' || prev === 'STAGE2_DECISION';
-        if (isSimulating && !prevSimulating) {
-          armorOpenStartRef.current = now;
-        } else if (!isSimulating) {
-          armorOpenStartRef.current = null;
-        }
-        prevPhaseRef.current = currentPhase;
-
         const armorElapsed = armorOpenStartRef.current === null ? 0 : now - armorOpenStartRef.current;
-        drawActiveNode(ctx2, activeNode, currentPhase, currentHeat, spriteSheet, armorElapsed, dragWorld);
-      } else {
-        // 无活跃节点时复位开壳计时与相位记忆，避免下次拖拽复用陈旧进度
-        armorOpenStartRef.current = null;
-        prevPhaseRef.current = currentPhase;
+        drawActiveNode(
+          ctx2,
+          activeNode,
+          currentPhase,
+          currentHeat,
+          spriteSheet,
+          armorElapsed,
+          dragWorld,
+          currentTarget,
+          reboundStart,
+          now
+        );
       }
 
       // 5. 绘制标签（仅标签模式激活；Tier3 由 drawLabels 内部直接跳过）
@@ -1144,7 +1258,6 @@ export const TopologyCanvas: React.FC<TopologyCanvasProps> = ({
       const now = performance.now();
       const dt = lastFrameTimeRef.current === 0 ? 0 : Math.min((now - lastFrameTimeRef.current) / 1000, 0.1);
       lastFrameTimeRef.current = now;
-      dtRef.current = dt;
 
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
       renderFrame(ctx, dt, dpr, timeSec, now, engineHeat, mapQosTier(engineTier));
@@ -1243,7 +1356,6 @@ export const TopologyCanvas: React.FC<TopologyCanvasProps> = ({
       hasMovedPastThresholdRef.current = false;
       draggedNodeIdRef.current = hit.id;
       dragStartRef.current = { x: sx, y: sy };
-      currentDragPosRef.current = { x: sx, y: sy };
       pointerWorldRef.current = { x: hit.coords[0], y: hit.coords[1] };
       onSelectNode(hit.id);
       e.currentTarget.setPointerCapture(e.pointerId);
@@ -1272,7 +1384,6 @@ export const TopologyCanvas: React.FC<TopologyCanvasProps> = ({
 
     // 2. 节点拖拽模式
     if (!isPointerDownRef.current || !dragStartRef.current) return;
-    currentDragPosRef.current = { x: sx, y: sy };
     // 拖拽派发用世界百分比坐标，与视口无关
     const world = screenToWorld(sx, sy, vp);
     pointerWorldRef.current = world;

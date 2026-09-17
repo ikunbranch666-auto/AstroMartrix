@@ -126,6 +126,7 @@ const AstroMatrixLayout: React.FC = () => {
             edges={data.edges}
             selectedNodeId={state.selectedNodeId}
             phase={state.phase}
+            targetCoords={state.targetCoords ? [state.targetCoords.x, state.targetCoords.y] : null}
             onSelectNode={actions.selectNode}
             onDragNode={(nodeId, x, y) => {
               // reducer 守卫自行分流：首次调用落 START_SIMULATION，其后落 UPDATE_SIMULATION_COORDS
